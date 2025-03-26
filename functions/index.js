@@ -35,8 +35,47 @@ const upload = multer({
   storage: storage,
   limits: {
     fileSize: 10 * 1024 * 1024 // 10MB limit
+  },
+  // Add error handling for file uploads
+  fileFilter: (req, file, cb) => {
+    // Accept only images
+    if (!file.mimetype.startsWith('image/')) {
+      console.error(`Rejected file upload: ${file.originalname} has invalid mimetype ${file.mimetype}`);
+      return cb(new Error('Only image files are allowed!'), false);
+    }
+    return cb(null, true);
   }
-});
+}).array('images', 3);
+
+// Custom error handling middleware for multer
+const uploadMiddleware = (req, res, next) => {
+  upload(req, res, function(err) {
+    if (err instanceof multer.MulterError) {
+      // A Multer error occurred when uploading
+      console.error('Multer upload error:', err);
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ 
+          error: 'File too large', 
+          message: 'Image file size must be less than 10MB' 
+        });
+      }
+      return res.status(400).json({ 
+        error: 'Upload error', 
+        message: err.message
+      });
+    } else if (err) {
+      // An unknown error occurred
+      console.error('Unknown upload error:', err);
+      return res.status(500).json({ 
+        error: 'Server error', 
+        message: 'Failed to process uploaded file'
+      });
+    }
+    
+    // Everything went fine, proceed
+    next();
+  });
+};
 
 // Add preflight OPTIONS handler
 app.options('*', cors(corsOptions));
@@ -102,6 +141,10 @@ async function analyzeImages(req, res) {
   console.log('=== API analyze request received ===');
   
   try {
+    // Log request metadata
+    console.log(`Request headers: ${JSON.stringify(req.headers['content-type'])}`);
+    console.log(`Request method: ${req.method}`);
+    
     if (!req.files || req.files.length === 0) {
       console.log('ERROR: No images uploaded in request');
       return res.status(400).json({ error: 'No images uploaded' });
@@ -116,6 +159,7 @@ async function analyzeImages(req, res) {
 
     // Convert image buffer to Gemini-compatible format
     const imageParts = [];
+    const errorDetails = [];
     
     // Process each uploaded file
     for (const file of req.files) {
@@ -123,6 +167,14 @@ async function analyzeImages(req, res) {
         // Validate buffer
         if (!file.buffer || file.buffer.length === 0) {
           console.error(`Invalid buffer for file ${file.originalname}`);
+          errorDetails.push(`Invalid buffer for file ${file.originalname}`);
+          continue;
+        }
+        
+        // Additional validation on file type
+        if (!file.mimetype.startsWith('image/')) {
+          console.error(`Invalid mimetype for file ${file.originalname}: ${file.mimetype}`);
+          errorDetails.push(`File ${file.originalname} is not a valid image`);
           continue;
         }
         
@@ -139,11 +191,16 @@ async function analyzeImages(req, res) {
         console.log(`Processed file: ${file.originalname}, size: ${file.size} bytes, mime: ${file.mimetype}`);
       } catch (fileError) {
         console.error(`Error processing file ${file.originalname}:`, fileError);
+        errorDetails.push(`Error processing file ${file.originalname}: ${fileError.message}`);
       }
     }
     
     if (imageParts.length === 0) {
-      return res.status(400).json({ error: 'Failed to process any of the uploaded images' });
+      console.error('ERROR: Failed to process any of the uploaded images:', errorDetails.join('; '));
+      return res.status(400).json({ 
+        error: 'Failed to process any of the uploaded images',
+        details: errorDetails 
+      });
     }
     
     // Prompt for the AI
@@ -314,12 +371,12 @@ Be extremely precise and technical in your analysis. If you cannot identify some
 }
 
 // Make the analyze endpoint work both with and without the /api prefix
-app.post('/analyze', upload.array('images', 3), async (req, res) => {
+app.post('/analyze', uploadMiddleware, async (req, res) => {
   return analyzeImages(req, res);
 });
 
 // Keep the /api/analyze endpoint for backward compatibility
-app.post('/api/analyze', upload.array('images', 3), async (req, res) => {
+app.post('/api/analyze', uploadMiddleware, async (req, res) => {
   return analyzeImages(req, res);
 });
 

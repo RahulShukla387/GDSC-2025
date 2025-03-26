@@ -103,6 +103,16 @@ const ScannerPage = () => {
       // Add each image to the form data
       imagesToAnalyze.forEach((file, index) => {
         console.log(`Adding file to FormData: ${file.name}, type: ${file.type}, size: ${file.size} bytes`);
+        
+        // Validate file type and size before adding to form data
+        if (!file.type.startsWith('image/')) {
+          throw new Error(`File ${file.name} is not a valid image file. Please upload only image files.`);
+        }
+        
+        if (file.size > 10 * 1024 * 1024) { // 10MB limit
+          throw new Error(`File ${file.name} exceeds the 10MB size limit. Please upload a smaller image.`);
+        }
+        
         formData.append('images', file);
       });
       
@@ -116,30 +126,52 @@ const ScannerPage = () => {
       
       console.log('Using API URL:', apiUrl);
       
-      console.log('Starting fetch request to API...');
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        body: formData,
-        mode: 'cors'
-      });
+      // Set a timeout for the fetch request
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
       
-      console.log('Server response received. Status:', response.status, response.statusText);
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('API Error response:', errorText);
-        throw new Error(`API request failed with status ${response.status}: ${errorText}`);
+      try {
+        console.log('Starting fetch request to API...');
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          body: formData,
+          mode: 'cors',
+          signal: controller.signal
+        });
+        
+        // Clear the timeout
+        clearTimeout(timeoutId);
+        
+        console.log('Server response received. Status:', response.status, response.statusText);
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('API Error response:', errorText);
+          
+          // Specific handling for HTTP 500 server errors
+          if (response.status === 500) {
+            throw new Error(`Server error (500): The image processing server encountered an issue. Please try again with a different image or wait a few minutes.`);
+          }
+          
+          throw new Error(`API request failed with status ${response.status}: ${errorText}`);
+        }
+        
+        console.log('Response is OK, parsing JSON...');
+        const data = await response.json();
+        console.log('Analysis results received');
+        
+        // Set results
+        setResult({
+          status: "complete",
+          data: data
+        });
+      } catch (fetchError) {
+        // Handle fetch-specific errors (network, timeout, etc.)
+        if (fetchError.name === 'AbortError') {
+          throw new Error('Request timed out. The server is taking too long to respond. Please try again later.');
+        }
+        throw fetchError; // Re-throw for the main catch block to handle
       }
-      
-      console.log('Response is OK, parsing JSON...');
-      const data = await response.json();
-      console.log('Analysis results received');
-      
-      // Set results
-      setResult({
-        status: "complete",
-        data: data
-      });
       
       // Stop the scanner if using camera
       if (scanning) {
